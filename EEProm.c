@@ -1,34 +1,54 @@
-/*******************************************************************
+/*********************************************
 * EEProm.c
-* Author: Jonathan L Clark
-* Description: This is an EEProm driver for the MSP432
 *
-* Date: 4/21/2015
-* Update: 12/4/2015, Added the array-write/read functions, removed exposed
-* internal functions from EEProm.h.
-********************************************************************/
+* Author: Jonathan L Clark
+* Date: Apr 21, 2015
+* Update: 6/15/2016, Moved all P2OUT, P2IN type
+* statements to the header so they can be changed
+* globally. Modified the driver to switch between bit banging
+* and USCI. (Note: The USCI code in place now is for the MSP430g2553
+* and is not functional)
+*************************************************/
 
-#include "msp.h"
+#include <msp430.h>
 #include "EEProm.h"
-#include "../../System/System.h"
+
+int EEProm_i = 0;
+char EEProm_In = 0;
 
 /***********************************************
 * WRITE EEProm 16 bit
 * DESCRIPTION: Write 16 bits of data to the
 * EEProm.
 ***********************************************/
-void EEProm_SPI_WriteNibble(uint16_t data)
+void WriteEEProm_16Bit(unsigned int data)
 {
-   uint8_t hi = data >> 8;
-   uint8_t lo = data;
+#if USE_USCI==1
+	unsigned char hi = data >> 8;
+	unsigned char lo = data;
 
+	while (!(IFG2 & UCB0TXIFG));               // USCI_A0 TX buffer ready?
+	         UCB0TXBUF = hi;                     // Transmit data
 
-   while (!(UCB0IFG&UCTXIFG));               // USCI_A0 TX buffer ready?
-            UCB0TXBUF = hi;                     // Transmit data
+	while (!(IFG2 & UCB0TXIFG));               // USCI_A0 TX buffer ready?
+	         UCB0TXBUF = lo;                     // Transmit data
 
-   while (!(UCB0IFG&UCTXIFG));               // USCI_A0 TX buffer ready?
-            UCB0TXBUF = lo;                     // Transmit data
-
+#else
+   for (EEProm_i = 0; EEProm_i < 16; EEProm_i++)
+   {
+      if ((data & 0x80) == 0x80)
+	  {
+    	  SI_HIGH;
+	  }
+	  else
+	  {
+		  SI_LOW;
+	  }
+      SCLK_HIGH;
+	  data = data << 1;
+	  SCLK_LOW;
+   }
+#endif
 
 }
 
@@ -37,82 +57,63 @@ void EEProm_SPI_WriteNibble(uint16_t data)
 * DESCRIPTION: Write data to the EEProm.
 * (Assuming that CS is set LOW)
 ************************************************/
-void EEProm_SPI_WriteByte(uint8_t data)
+void WriteEEProm_8Bit(char data)
 {
-   while (!(UCB0IFG&UCTXIFG));               // USCI_A0 TX buffer ready?
-            UCB0TXBUF = data;                     // Transmit data
+#if USE_USCI==1
+	while (!(IFG2 & UCB0TXIFG));            // USCI_A0 TX buffer ready?
+	UCB0TXBUF = data;                     // Transmit data
+
+#else
+   for (EEProm_i = 0; EEProm_i < 8; EEProm_i++)
+   {
+      if ((data & 0x80) == 0x80)
+      {
+    	  SI_HIGH;
+      }
+      else
+      {
+    	  SI_LOW;
+      }
+      SCLK_HIGH;
+      data = data << 1;
+      SCLK_LOW;
+   }
+#endif
+
 }
 
 /***********************************************
 * READ EEProm 8 bit
 * DESCRIPTION: Read 8 bits of EE prom data
 ***********************************************/
-uint8_t EEProm_SPI_ReadByte(void)
+char ReadEEProm_8Bit(void)
 {
-   while (!(UCB0IFG&UCTXIFG));               // USCI_A0 TX buffer ready?
+#if USE_USCI==1
+	while (!(IFG2 & UCB0TXIFG));               // USCI_A0 TX buffer ready?
 	         UCB0TXBUF = 0xFF;                     // Dummy write
 
-   //May need delay here
-   while  (!(UCB0IFG&UCRXIFG));
+	//May need delay here
+	while  (!(IFG2 & UCB0RXIFG));
 
 	return UCB0RXBUF;
 
-}
-
-/************************************************
-* EEPROM WRITE ARRAY
-* DESCRIPTION: Writes an array of values to the EEProm memory
-* starting at the input address
-*************************************************/
-void WriteEEProm_Array(uint16_t address, uint8_t* data, uint8_t size)
-{
-	SetClockSpeed(0); //Clock Speed must be < 10Mhz to support EEProm
-	uint8_t i;
-    P2OUT &= ~EEPROM_CS;        //EEProm CS is pulled low for write sequence
-    EEProm_SPI_WriteByte(0x06);     //Write enable command
-    P2OUT |= EEPROM_CS;         //EEProm CS is pulled high to lock in data
-    P2OUT &= ~EEPROM_CS;        //EEProm CS is pulled low for write sequence
-    EEProm_SPI_WriteByte(0x02);     //Write command
-    EEProm_SPI_WriteNibble(address); //Set address to write
-    for (i = 0; i < size; i++)
-    {
-       while (!(UCB0IFG&UCTXIFG));               // USCI_A0 TX buffer ready?
-    	        UCB0TXBUF = data[i];             // Transmit data
-    }
-    //EEProm_SPI_WriteByte(data);     //Write EEProm data
-    P2OUT |= EEPROM_CS;         //EEProm CS is pulled high to block further writes
-    int index = 0;
-	while (index < WRITE_DELAY)
-	{
-	   index++;
-	}
-	SetClockSpeed(5); //Increase Clock speed back to full
-}
-
-/************************************************
-* EEPROM READ ARRAY
-* DESCRIPTION: Reads an array of values to the EEProm memory
-* starting at the input address
-*************************************************/
-void ReadEEProm_Array(uint16_t address, uint8_t* outputData, uint8_t size)
-{
-   SetClockSpeed(0); //Clock Speed must be < 10Mhz to support EEProm
-   uint8_t i;
-   P2OUT &= ~EEPROM_CS; //EEProm CS is pulled low for read sequence
-   EEProm_SPI_WriteByte(0x03); //Write command
-   EEProm_SPI_WriteNibble(address); //Set address to write
-   for (i = 0; i < size; i++)
+#else
+   char output = 0x00;
+   for (EEProm_i = 0; EEProm_i < 8; EEProm_i++)
    {
-       while (!(UCB0IFG&UCTXIFG));               // USCI_A0 TX buffer ready?
-		       UCB0TXBUF = 0xFF;                     // Dummy write
-
-	   //May need delay here
-	   while  (!(UCB0IFG&UCRXIFG));
-	   outputData[i] = UCB0RXBUF;
-
+	  SCLK_HIGH;
+	  output = output << 1;
+	  EEProm_In = SO_PORT;
+      if ((EEProm_In & EEPROM_SO) == EEPROM_SO)
+      {
+         output = output | 0x01;
+      }
+      SCLK_LOW;
    }
-   P2OUT |= EEPROM_CS; //EEProm CS is pulled high to block further writes
-   SetClockSpeed(5); //Increase Clock speed back to full
+
+   return output;
+#endif
+
 }
 
 /**********************************************
@@ -120,13 +121,13 @@ void ReadEEProm_Array(uint16_t address, uint8_t* outputData, uint8_t size)
 * DESCRIPTION: Read the EEProm data from the
 * given address.
 **********************************************/
-uint8_t EEProm_Read(uint16_t address)
+char EEProm_Read(unsigned int address)
 {
-   P2OUT &= ~EEPROM_CS; //EEProm CS is pulled low for read sequence
-   EEProm_SPI_WriteByte(0x03); //Write command
-   EEProm_SPI_WriteNibble(address); //Set address to write
-   uint8_t output = EEProm_SPI_ReadByte();
-   P2OUT |= EEPROM_CS; //EEProm CS is pulled high to block further writes
+   CS_LOW;
+   WriteEEProm_8Bit(0x03);      //Write command
+   WriteEEProm_16Bit(address);  //Set address to write
+   char output = ReadEEProm_8Bit();
+   CS_HIGH;
 
    return output;
 
@@ -137,16 +138,16 @@ uint8_t EEProm_Read(uint16_t address)
 * DESCRIPTION: Write data to the EEProm at the
 * given addrress.
 ************************************************/
-void EEProm_Write(uint16_t address, uint8_t data)
+void EEProm_Write(unsigned int address, char data)
 {
-   P2OUT &= ~EEPROM_CS;        //EEProm CS is pulled low for write sequence
-   EEProm_SPI_WriteByte(0x06);     //Write enable command
-   P2OUT |= EEPROM_CS;         //EEProm CS is pulled high to lock in data
-   P2OUT &= ~EEPROM_CS;        //EEProm CS is pulled low for write sequence
-   EEProm_SPI_WriteByte(0x02);     //Write command
-   EEProm_SPI_WriteNibble(address); //Set address to write
-   EEProm_SPI_WriteByte(data);     //Write EEProm data
-   P2OUT |= EEPROM_CS;         //EEProm CS is pulled high to block further writes
+   CS_LOW;
+   WriteEEProm_8Bit(0x06);     //Write enable command
+   CS_HIGH;
+   CS_LOW;
+   WriteEEProm_8Bit(0x02);     //Write command
+   WriteEEProm_16Bit(address); //Set address to write
+   WriteEEProm_8Bit(data);     //Write EEProm data
+   CS_HIGH;
    int index = 0;
    while (index < WRITE_DELAY)
    {
@@ -159,15 +160,13 @@ void EEProm_Write(uint16_t address, uint8_t data)
 * DESCRIPTION: Writes 16 bits of data to the
 * EEProm at the given address.
 ***********************************************/
-void EEProm_Write_16(uint16_t address, uint16_t data)
+void EEProm_Write_16(unsigned int address, unsigned int data)
 {
-	SetClockSpeed(0); //Clock Speed must be < 10Mhz to support EEProm
-   uint8_t top = data >> 8;
-   uint8_t bottom = data & 0x00ff;
+   char top = data >> 8;
+   char bottom = data & 0x00ff;
    EEProm_Write(address, top);
    address++;
    EEProm_Write(address, bottom);
-   SetClockSpeed(5); //Increase Clock speed back to full
 }
 
 /**********************************************
@@ -175,15 +174,13 @@ void EEProm_Write_16(uint16_t address, uint16_t data)
 * DESCRIPTION: Read 16 bits of data from the
 * EEProm at the given address.
 **********************************************/
-uint16_t EEProm_Read_16(uint16_t address)
+unsigned int EEProm_Read_16(unsigned int address)
 {
-	 SetClockSpeed(0); //Clock Speed must be < 10Mhz to support EEProm
-    uint16_t output = EEProm_Read(address);
+	unsigned int output = EEProm_Read(address);
 	address++;
-	uint16_t value2 = EEProm_Read(address);
+	unsigned int value2 = EEProm_Read(address);
 	output = output << 8;
 	output = output | value2;
-	SetClockSpeed(5); //Increase Clock speed back to full
 
 	return output;
 
@@ -209,16 +206,13 @@ void EEPromClear(void)
 ***********************************************/
 void EEPromInit(void)
 {
-	//SetClockSpeed(0);
-   //__disable_interrupts();
-   P2DIR |= EEPROM_CS;
-   P2OUT |= EEPROM_CS; //EEProm CS is set high to prevent reading
-
-   P2OUT &= ~EEPROM_CS; //EEProm CS is set high to prevent reading
-   EEProm_SPI_WriteByte(0x06); //Send WREN instruction to EEProm
-   P2OUT |= EEPROM_CS; //EEProm CS is set high to prevent reading
-   //__enable_interrupts();
-   //SetClockSpeed(5);
+   SCLK_SETUP;
+   SI_SETUP;
+   CS_SETUP;
+   CS_HIGH;
+   SCLK_LOW;
+   CS_LOW;
+   WriteEEProm_8Bit(0x06); //Send WREN instruction to EEProm
+   CS_HIGH;
 
 }
-
